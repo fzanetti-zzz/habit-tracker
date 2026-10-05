@@ -1,6 +1,6 @@
 // Service worker: rende l'app utilizzabile anche offline.
 // Quando modifichi i file dell'app, aumenta VERSION.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const CACHE = 'habit-tracker-' + VERSION;
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'icons.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png',
   'fonts/jakarta-400.woff2', 'fonts/jakarta-500.woff2', 'fonts/jakarta-600.woff2', 'fonts/jakarta-700.woff2', 'fonts/jakarta-800.woff2',

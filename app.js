@@ -610,13 +610,54 @@ function settingsSheet() {
       <div class="mi" style="${cvars(h.color)}"><div class="hicon">${habitGlyph(h)}</div><div class="t">${esc(h.name)}</div>
         <button class="mini" data-a="unarchive" data-h="${h.id}" aria-label="Ripristina">${icon('archive-off')}</button>
       </div>`).join('')}</div>` : ''}
-    <div class="sect">Backup</div>
+    <div class="sect">Backup su Google Drive</div>
     <div class="card menu">
-      <button class="mi" data-a="export">${icon('download')}<div class="t">Esporta backup<small>Salva un file con tutte le abitudini e lo storico</small></div></button>
+      <div class="mi field-row"><div class="t">Indirizzo dello script<small>Incolla l'indirizzo dell'app web che finisce con /exec</small>
+        <input class="input" id="drive-url" data-s="driveUrl" value="${esc(S.settings.driveUrl || '')}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" autocapitalize="off" spellcheck="false"></div></div>
+      <button class="mi" data-a="drive-now" ${S.settings.driveUrl ? '' : 'disabled'}>${icon('cloud-upload')}<div class="t">${UI.driveBusy ? 'Salvataggio in corso…' : 'Esporta ora su Drive'}<small>${lastBackupLabel()}</small></div></button>
+    </div>
+    <div class="sect">Backup su file</div>
+    <div class="card menu">
+      <button class="mi" data-a="export">${icon('download')}<div class="t">Esporta su file<small>Salva un file con tutte le abitudini e lo storico</small></div></button>
       <button class="mi" data-a="import">${icon('upload')}<div class="t">Importa backup<small>Anche da HabitKit. Sostituisce i dati attuali</small></div></button>
     </div>
-    <p class="foot-note">I dati sono salvati solo su questo dispositivo. Fai un backup ogni tanto.</p>
+    <p class="foot-note">I dati sono salvati solo su questo dispositivo. Con Drive collegato, la prima volta che apri l'app ogni mese parte da solo un backup in Personale/habit-tracker.</p>
   </div>`;
+}
+
+/* ---------- Backup su Google Drive ---------- */
+const DRIVE_URL_RE = /^https:\/\/script\.google\.com\/(a\/[^/]+\/)?macros\/s\/[\w-]+\/exec$/;
+function backupData(auto) { return { app: 'habit-tracker', auto, exportedAt: new Date().toISOString(), ...S }; }
+function lastBackupLabel() {
+  const t = S.settings.lastBackupAt;
+  if (!t) return S.settings.driveUrl ? 'Nessun backup ancora' : 'Prima incolla l\'indirizzo dello script';
+  const d = new Date(t);
+  return `Ultimo backup: ${d.getDate()} ${MONTHS[d.getMonth()].toLowerCase()} ${d.getFullYear()}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+async function driveUpload(auto) {
+  const url = S.settings.driveUrl;
+  if (!url) throw new Error('Collega prima Google Drive nelle impostazioni');
+  let res;
+  try {
+    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(backupData(auto)) });
+  } catch (e) { throw new Error('Drive non raggiungibile: controlla la connessione'); }
+  let j = null;
+  try { j = await res.json(); } catch (e) { /* risposta non JSON */ }
+  if (!j || !j.ok) throw new Error(j && j.error ? 'Drive: ' + j.error : 'Lo script non ha risposto: controlla l\'indirizzo e che l\'accesso sia "Chiunque"');
+  S.settings.lastBackupAt = new Date().toISOString(); save();
+  return j;
+}
+// Backup automatico: una volta per mese di calendario, all'apertura dell'app
+let autoRunning = false;
+async function autoBackup() {
+  if (autoRunning || !S.settings.driveUrl || !navigator.onLine) return;
+  const last = S.settings.lastBackupAt ? new Date(S.settings.lastBackupAt) : null;
+  const now = new Date();
+  if (last && last.getFullYear() === now.getFullYear() && last.getMonth() === now.getMonth()) return;
+  autoRunning = true;
+  try { await driveUpload(true); toast('Backup mensile salvato su Drive'); if (UI.sheet && UI.sheet.type === 'settings') renderSheet(); }
+  catch (e) { /* si riprova alla prossima apertura */ }
+  autoRunning = false;
 }
 
 /* ---------- Render ---------- */
@@ -756,8 +797,15 @@ const actions = {
     save(); closeSheet(); render();
   },
   'note-del'() { const { hid, k } = UI.sheet; delete (S.notes[hid] || {})[k]; save(); closeSheet(); render(); },
+  async 'drive-now'() {
+    if (UI.driveBusy) return;
+    UI.driveBusy = true; renderSheet();
+    try { await driveUpload(false); toast('Backup salvato su Google Drive'); }
+    catch (e) { toast(e.message || 'Backup su Drive non riuscito'); }
+    UI.driveBusy = false; renderSheet();
+  },
   async export() {
-    const data = JSON.stringify({ app: 'habit-tracker', exportedAt: new Date().toISOString(), ...S }, null, 1);
+    const data = JSON.stringify(backupData(false), null, 1);
     const name = `habit-tracker-backup-${key(today())}.json`;
     const file = new File([data], name, { type: 'application/json' });
     try {
@@ -796,6 +844,15 @@ document.addEventListener('input', e => {
     const prev = $sheet.querySelector('.preview .hicon'); if (prev) prev.innerHTML = habitGlyph(d);
     $sheet.querySelectorAll('.icon-grid .sel').forEach(b => b.classList.remove('sel'));
   }
+});
+
+// Indirizzo dello script Drive (impostazioni)
+document.addEventListener('change', e => {
+  if (!e.target.dataset || e.target.dataset.s !== 'driveUrl') return;
+  const v = e.target.value.trim();
+  if (v && !DRIVE_URL_RE.test(v)) { toast('Indirizzo non valido: deve finire con /exec'); return; }
+  S.settings.driveUrl = v; save(); renderSheet();
+  if (v) toast('Google Drive collegato');
 });
 
 // Import backup
@@ -840,12 +897,15 @@ document.addEventListener('contextmenu', e => { if (e.target.closest('[data-day]
 // Cambio giorno mentre l'app è aperta
 let lastDay = key(today());
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && key(today()) !== lastDay) { lastDay = key(today()); render(); }
+  if (document.visibilityState !== 'visible') return;
+  if (key(today()) !== lastDay) { lastDay = key(today()); render(); }
+  autoBackup();
 });
 window.addEventListener('resize', () => { if (S.settings.view === 'grid' && UI.route === 'home') render(); });
 
 /* ---------- Avvio ---------- */
 route();
+setTimeout(autoBackup, 1500);
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
