@@ -81,6 +81,64 @@ function defaultState() {
     settings: { view: 'week', days: 5 },
   };
 }
+/* ---------- Import da HabitKit ---------- */
+const HK_COLORS = {
+  blue: '#6ca0f4', yellow: '#f2ce48', slate: '#9ba6bd', rose: '#ea7887', pink: '#ea7887', teal: '#66d5c4',
+  red: '#e8796f', orange: '#ef9a4c', emerald: '#6dd5a0', green: '#6dd5a0', gray: '#a3a6ae', grey: '#a3a6ae',
+  cyan: '#5ecfeb', purple: '#a970e6', violet: '#a970e6', indigo: '#8b80f9', fuchsia: '#da70d6', lime: '#a3d65c',
+  amber: '#ef9a4c', brown: '#c79a6b', sky: '#5ecfeb',
+};
+const HK_ICONS = {
+  eye: 'eye', running: 'run', walking: 'walk', bookOpen: 'book', book: 'book', socialize: 'friends', activity: 'activity-heartbeat',
+  bike: 'bike', swimming: 'swimming', dumbbell: 'barbell', heart: 'heart', brain: 'brain', moon: 'moon', sun: 'sun', bed: 'bed',
+  coffee: 'coffee', apple: 'apple', leaf: 'leaf', droplet: 'droplet', water: 'glass-full', pill: 'pill', code: 'code',
+  briefcase: 'briefcase', music: 'music', palette: 'palette', camera: 'camera', pencil: 'pencil', yoga: 'yoga',
+};
+// Riconosce un'esportazione di HabitKit (anche se già salvata per errore senza conversione)
+function isHabitKit(d) {
+  if (!d || !Array.isArray(d.habits)) return false;
+  if (Array.isArray(d.completions) || Array.isArray(d.intervals)) return true;
+  return d.habits.some(h => h && typeof h === 'object' &&
+    ('orderIndex' in h || 'isInverse' in h || (typeof h.icon === 'string' && !/^[ei]:/.test(h.icon))));
+}
+// Data locale di una registrazione HabitKit (data UTC + fuso orario di quando è stata salvata)
+function hkLocalKey(iso, offsetMin) {
+  const t = new Date(new Date(iso).getTime() + (offsetMin || 0) * 60000);
+  return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`;
+}
+function fromHabitKit(d, settings) {
+  // HabitKit mostra per prime le abitudini create per ultime
+  const src = d.habits.map((h, i) => ({ h, i }))
+    .sort((a, b) => (a.h.orderIndex - b.h.orderIndex) || (b.i - a.i)).map(x => x.h);
+  const goals = {};
+  for (const iv of d.intervals || []) {
+    if (iv.endDate) continue;
+    const type = { day: 'day', daily: 'day', week: 'week', weekly: 'week', month: 'month', monthly: 'month' }[iv.type];
+    if (type) goals[iv.habitId] = { type, count: type === 'day' ? 1 : Math.max(1, iv.requiredNumberOfCompletions || 1) };
+  }
+  const habits = src.map(h => ({
+    id: h.id,
+    name: h.name || 'Abitudine',
+    desc: h.description || h.desc || '',
+    icon: typeof h.icon === 'string' && /^[ei]:/.test(h.icon) ? h.icon : h.emoji ? 'e:' + (/\uFE0F/.test(h.emoji) ? h.emoji : h.emoji + '\uFE0F') : HK_ICONS[h.icon] ? 'i:' + HK_ICONS[h.icon] : 'e:✅',
+    color: /^#[0-9a-f]{6}$/i.test(h.color) ? h.color : HK_COLORS[h.color] || COLORS[0],
+    goal: goals[h.id] || { type: 'none', count: 1 },
+    createdAt: /^\d{4}-\d{2}-\d{2}$/.test(h.createdAt) ? h.createdAt : h.createdAt ? hkLocalKey(h.createdAt, 0) : key(today()),
+    archived: !!h.archived,
+  }));
+  const ids = new Set(habits.map(h => h.id));
+  // Se l'esportazione era già stata salvata per errore, si tengono anche i giorni segnati dopo
+  const done = d.done && typeof d.done === 'object' ? JSON.parse(JSON.stringify(d.done)) : {};
+  const notes = d.notes && typeof d.notes === 'object' ? JSON.parse(JSON.stringify(d.notes)) : {};
+  for (const c of d.completions || []) {
+    if (!c || !ids.has(c.habitId) || !c.date) continue;
+    const k = hkLocalKey(c.date, c.timezoneOffsetInMinutes);
+    if (c.amountOfCompletions > 0) (done[c.habitId] || (done[c.habitId] = {}))[k] = 1;
+    if (c.note) (notes[c.habitId] || (notes[c.habitId] = {}))[k] = c.note;
+  }
+  return normalize({ version: 1, habits, done, notes, settings: { ...(settings || {}), ...(d.settings || {}) } });
+}
+
 function normalize(s) {
   s.habits = (s.habits || []).map(h => ({ goal: { type: 'none', count: 1 }, desc: '', archived: false, createdAt: key(today()), ...h }));
   s.done = s.done || {};
@@ -91,7 +149,11 @@ function normalize(s) {
 function load() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) { const s = JSON.parse(raw); if (s && Array.isArray(s.habits)) return normalize(s); }
+    if (raw) {
+      const s = JSON.parse(raw);
+      if (isHabitKit(s)) return fromHabitKit(s); // ripara un'importazione non convertita
+      if (s && Array.isArray(s.habits)) return normalize(s);
+    }
   } catch (e) { /* stato corrotto: si riparte */ }
   return defaultState();
 }
@@ -109,56 +171,6 @@ function toggle(h, k) {
   const m = S.done[h.id] || (S.done[h.id] = {});
   if (m[k]) delete m[k]; else m[k] = 1;
   save();
-}
-
-/* ---------- Import da HabitKit ---------- */
-const HK_COLORS = {
-  blue: '#6ca0f4', yellow: '#f2ce48', slate: '#9ba6bd', rose: '#ea7887', pink: '#ea7887', teal: '#66d5c4',
-  red: '#e8796f', orange: '#ef9a4c', emerald: '#6dd5a0', green: '#6dd5a0', gray: '#a3a6ae', grey: '#a3a6ae',
-  cyan: '#5ecfeb', purple: '#a970e6', violet: '#a970e6', indigo: '#8b80f9', fuchsia: '#da70d6', lime: '#a3d65c',
-  amber: '#ef9a4c', brown: '#c79a6b', sky: '#5ecfeb',
-};
-const HK_ICONS = {
-  eye: 'eye', running: 'run', walking: 'walk', bookOpen: 'book', book: 'book', socialize: 'friends', activity: 'activity-heartbeat',
-  bike: 'bike', swimming: 'swimming', dumbbell: 'barbell', heart: 'heart', brain: 'brain', moon: 'moon', sun: 'sun', bed: 'bed',
-  coffee: 'coffee', apple: 'apple', leaf: 'leaf', droplet: 'droplet', water: 'glass-full', pill: 'pill', code: 'code',
-  briefcase: 'briefcase', music: 'music', palette: 'palette', camera: 'camera', pencil: 'pencil', yoga: 'yoga',
-};
-function isHabitKit(d) { return d && Array.isArray(d.habits) && Array.isArray(d.completions) && 'formatVersion' in d; }
-// Data locale di una registrazione HabitKit (data UTC + fuso orario di quando è stata salvata)
-function hkLocalKey(iso, offsetMin) {
-  const t = new Date(new Date(iso).getTime() + (offsetMin || 0) * 60000);
-  return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}`;
-}
-function fromHabitKit(d) {
-  // HabitKit mostra per prime le abitudini create per ultime
-  const src = d.habits.map((h, i) => ({ h, i }))
-    .sort((a, b) => (a.h.orderIndex - b.h.orderIndex) || (b.i - a.i)).map(x => x.h);
-  const goals = {};
-  for (const iv of d.intervals || []) {
-    if (iv.endDate) continue;
-    const type = { day: 'day', daily: 'day', week: 'week', weekly: 'week', month: 'month', monthly: 'month' }[iv.type];
-    if (type) goals[iv.habitId] = { type, count: type === 'day' ? 1 : Math.max(1, iv.requiredNumberOfCompletions || 1) };
-  }
-  const habits = src.map(h => ({
-    id: h.id,
-    name: h.name || 'Abitudine',
-    desc: h.description || '',
-    icon: h.emoji ? 'e:' + (/\uFE0F/.test(h.emoji) ? h.emoji : h.emoji + '\uFE0F') : HK_ICONS[h.icon] ? 'i:' + HK_ICONS[h.icon] : 'e:✅',
-    color: HK_COLORS[h.color] || COLORS[0],
-    goal: goals[h.id] || { type: 'none', count: 1 },
-    createdAt: hkLocalKey(h.createdAt, 0),
-    archived: !!h.archived,
-  }));
-  const ids = new Set(habits.map(h => h.id));
-  const done = {}, notes = {};
-  for (const c of d.completions) {
-    if (!ids.has(c.habitId)) continue;
-    const k = hkLocalKey(c.date, c.timezoneOffsetInMinutes);
-    if (c.amountOfCompletions > 0) (done[c.habitId] || (done[c.habitId] = {}))[k] = 1;
-    if (c.note) (notes[c.habitId] || (notes[c.habitId] = {}))[k] = c.note;
-  }
-  return normalize({ version: 1, habits, done, notes, settings: { ...S.settings } });
 }
 
 /* ---------- Statistiche e serie ---------- */
@@ -861,7 +873,7 @@ document.getElementById('import-file').addEventListener('change', async e => {
   if (!f) return;
   try {
     let s = JSON.parse(await f.text());
-    if (isHabitKit(s)) s = fromHabitKit(s);
+    if (isHabitKit(s)) s = fromHabitKit(s, S.settings);
     if (!s || !Array.isArray(s.habits)) throw new Error('formato');
     askConfirm(`Importare ${s.habits.length} abitudini?`, 'I dati attuali su questo telefono verranno sostituiti da quelli del backup.', 'Importa', () => {
       delete s.app; delete s.exportedAt;
