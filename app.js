@@ -638,7 +638,7 @@ function settingsSheet() {
 }
 
 /* ---------- Backup su Google Drive ---------- */
-const DRIVE_URL_RE = /^https:\/\/script\.google\.com\/(a\/[^/]+\/)?macros\/s\/[\w-]+\/exec$/;
+const DRIVE_URL_RE = /^https:\/\/script\.google\.com\/(a\/macros\/[^/]+|macros)\/s\/[\w-]+\/exec$/;
 function backupData(auto) { return { app: 'habit-tracker', auto, exportedAt: new Date().toISOString(), ...S }; }
 function lastBackupLabel() {
   const t = S.settings.lastBackupAt;
